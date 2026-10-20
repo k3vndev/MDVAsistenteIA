@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Player coordinates are no longer exposed to the assistant. `player-data` now reports only world and biome for location, `coords`/`coordenadas` no longer trigger it, and the system prompt forbids giving, estimating or inventing any player's coordinates. Other tools already cover coordinates, and exposing them let any player locate another one through public chat.
+
 ## 1.7.17 - Natural wiki routing / live-chat hardening
 
 - Added optional per-request token usage debug (`ai.usage-debug.enabled`) logging input, cached, output and total tokens with scene/provider/model context.

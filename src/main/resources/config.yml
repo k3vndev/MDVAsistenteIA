@@ -266,7 +266,8 @@ tools:
     debug-log: false
 
   # Local trusted Bukkit data; Java adds it only when the scene asks about
-  # location/status. No second AI request.
+  # location/status. No second AI request. Location means world + biome only;
+  # player coordinates are never sent to the model.
   player-data:
     activation: smart
     max-players: 2
