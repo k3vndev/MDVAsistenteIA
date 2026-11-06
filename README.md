@@ -1,6 +1,100 @@
-# ServerAssistant 1.7.19
+# ServerAssistant 1.8.0
 
 ServerAssistant 1.7.17 hardens natural-language wiki routing after live server tests. Conversational wrappers, broad category questions, use/function questions, commerce, deictic travel, and short subject swaps are all resolved locally before the normal model request. The architecture remains **one global conversation** with **one model request per scene**; no classifier/model request, embedding call, retry, or external wiki lookup was added.
+
+## 1.8.0 AI gateway and public AI API
+
+- Model access is now a shared `AiGateway`, separate from Isolda's prompt logic. Isolda behaves exactly as before.
+- Other plugins can call the AI with their own instructions through `me.kev.sva.api.AiService` (see "Using the AI from another plugin" below), configured under `api` in `config.yml`.
+- `/sva api status` and `/sva api test <profile> <text...>` for admins.
+
+## Using the AI from another plugin
+
+ServerAssistant registers `me.kev.sva.api.AiService` in Bukkit's ServicesManager. A plugin can send one-off requests with its own instructions; they reuse the providers configured under `ai`, but never Isolda's prompt, memory or prompt cache key.
+
+**1. Declare the dependency.** In your `plugin.yml`:
+
+```yaml
+softdepend: [ServerAssistant]
+```
+
+Install the API jar locally with `mvn install` in this repository, then in your `pom.xml`:
+
+```xml
+<dependency>
+  <groupId>me.kev</groupId>
+  <artifactId>ServerAssistant</artifactId>
+  <version>1.8.0</version>
+  <classifier>api</classifier>
+  <scope>provided</scope>
+</dependency>
+```
+
+**2. Allow your plugin** in ServerAssistant's `config.yml`. The key is your plugin's name (`Plugin#getName()`); with `unknown-clients: deny` (default) unlisted plugins get `CLIENT_NOT_ALLOWED`:
+
+```yaml
+api:
+  clients:
+    MDVTutorial:
+      enabled: true
+      profiles: [tutorial-hint, default]
+      max-requests-per-minute: 6
+      max-requests-per-player-per-minute: 2
+      daily-token-budget: 100000
+```
+
+Profiles (`api.profiles`) set the provider, model, output tokens, temperature and timeout. Missing fields come from `default`, and what `default` leaves out comes from the provider.
+
+**3. Send a request.**
+
+```java
+AiService ai = Bukkit.getServicesManager().load(AiService.class);
+if (ai == null || !ai.isAvailable()) { sendStaticHint(player); return; }
+
+AiRequest req = AiRequest.builder("tutorial-hint")
+    .system("You help new players of a Spanish Minecraft RPG server. Answer in Spanish, max 2 sentences.")
+    .user("El jugador pregunta: " + question)
+    .forPlayer(player.getUniqueId())
+    .priority(AiPriority.INTERACTIVE)
+    .tag("tutorial:hint")
+    .build();
+
+ai.request(this, req).whenComplete((result, error) -> {
+  if (error != null) { sendStaticHint(player); return; }
+  player.sendMessage(result.text());
+});
+```
+
+JSON answers, for example generating trivia questions in the background:
+
+```java
+AiRequest req = AiRequest.builder("trivia-generate")
+    .system("You write trivia questions about a Minecraft RPG server. "
+        + "Reply only with JSON: {\"questions\":[{\"q\":\"...\",\"options\":[\"...\"],\"answer\":0}]}")
+    .user("Write 5 questions about these wiki facts:\n" + facts)
+    .format(AiResponseFormat.JSON_OBJECT)
+    .tag("trivia:generate")
+    .build();   // priority defaults to BACKGROUND
+
+ai.request(this, req).whenComplete((result, error) -> {
+  if (error != null) { useBuiltInQuestions(); return; }
+  Optional<JsonObject> json = result.json();   // tolerates ```json fences and text around the object
+  if (json.isEmpty()) { useBuiltInQuestions(); return; }
+  loadQuestions(json.get().getAsJsonArray("questions"));
+});
+```
+
+**Rules:**
+
+- The future always completes on the **main thread**. Never call `join()` or `get()` on the main thread.
+- Always have a fallback without AI: the API can be disabled, rate limited, out of budget or reloading. Failures are an `AiException` with a `reason()`.
+- Never send player coordinates, passwords or other private data.
+- The last message must be a user message; `build()` throws `IllegalArgumentException` otherwise.
+- Put stable instructions first and changing data last. No `prompt_cache_key` is sent for external requests, but OpenAI still caches identical prefixes automatically.
+- `INTERACTIVE` is for a player waiting on the answer. `BACKGROUND` (default) also waits while the provider is close to its per-minute limit, keeping `api.reserve-for-assistant-rpm` requests free for Isolda.
+- Daily token budgets are kept **in memory only** and restart with the server (not with `/sva reload`).
+- `/sva reload` keeps your `AiService` reference valid; requests pending during the reload fail with `RELOADING`.
+- External requests are never retried on the same provider; they get at most one hop to the fallback provider. Prompt contents are never logged.
 
 ## 1.7.19 realistic reply timing
 
@@ -357,6 +451,8 @@ For 1.7.7 the Maven version is:
 ```
 
 The workflow automatically expects and uploads `target/ServerAssistant-1.7.7.jar`.
+
+Since 1.8.0 the build also writes `target/ServerAssistant-<version>-api.jar`, which contains only the public `me.kev.sva.api` package for other plugins to compile against.
 
 
 ### Reused GitHub repositories
