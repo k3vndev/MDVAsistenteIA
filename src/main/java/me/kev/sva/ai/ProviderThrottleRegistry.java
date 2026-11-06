@@ -1,4 +1,4 @@
-package me.kev.sva.chat;
+package me.kev.sva.ai;
 
 import java.util.ArrayDeque;
 import java.util.Deque;

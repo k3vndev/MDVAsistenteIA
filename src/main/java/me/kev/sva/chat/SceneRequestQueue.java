@@ -8,11 +8,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 import org.bukkit.scheduler.BukkitTask;
 
 import me.kev.sva.ServerAssistantPlugin;
+import me.kev.sva.ai.AiGateway;
+import me.kev.sva.ai.ProviderErrors;
+import me.kev.sva.ai.ProviderSlot;
 import me.kev.sva.chat.assistant.AssistantManager;
 import me.kev.sva.chat.assistant.AssistantResponse;
 import me.kev.sva.chat.message.ChatMessage;
@@ -25,7 +27,7 @@ import me.kev.sva.chat.tools.ToolManager;
 final class SceneRequestQueue {
   private final ServerAssistantPlugin plugin;
   private final AssistantManager assistantManager;
-  private final ProviderThrottleRegistry providerThrottle;
+  private final AiGateway gateway;
   private final Deque<SceneMemory> sceneHistory;
   private final SmartFollowUpGate smartGate;
   private final ReplyPostProcessor replies;
@@ -50,8 +52,8 @@ final class SceneRequestQueue {
       SmartFollowUpGate smartGate,
       ReplyPostProcessor replies) {
     this.plugin = plugin;
-    this.assistantManager = new AssistantManager(plugin);
-    this.providerThrottle = plugin.getProviderThrottleRegistry();
+    this.gateway = plugin.getAiGateway();
+    this.assistantManager = new AssistantManager(plugin, gateway);
     this.sceneHistory = log.sceneHistory();
     this.smartGate = smartGate;
     this.replies = replies;
@@ -168,7 +170,7 @@ final class SceneRequestQueue {
     }
 
     requestInFlight = true;
-    providerThrottle.recordAttempt(provider.throttleKey());
+    // The gateway records the attempt on the provider's throttle bucket.
     assistantManager.sendAIRequest(
         scene.providerIndex(),
         scene.messages(),
@@ -192,10 +194,10 @@ final class SceneRequestQueue {
     var provider = assistantManager.getProviderSettings(scene.providerIndex());
 
     if (error != null) {
-      if (isRateLimitError(error)) {
-        long retryAfter = parseProviderRetryDelay(error, 60_000L);
+      if (ProviderErrors.isRateLimit(error)) {
+        long retryAfter = ProviderErrors.parseRetryDelay(error, 60_000L);
         if (provider != null) {
-          providerThrottle.applyCooldown(provider.throttleKey(), retryAfter);
+          gateway.applyCooldown(ProviderSlot.fromIndex(scene.providerIndex()), null, retryAfter);
         }
         plugin.getLogger().warning((provider == null ? "AI provider" : provider.displayName())
             + " rate limit reached. Global chat remains active; scene " + scene.sceneId() + " was not answered.");
@@ -203,7 +205,7 @@ final class SceneRequestQueue {
           processNextRequest();
           return;
         }
-      } else if (isTransientProviderError(error)) {
+      } else if (ProviderErrors.isTransient(error)) {
         if (queueFallback(scene, "temporary provider error")) {
           processNextRequest();
           return;
@@ -447,9 +449,7 @@ final class SceneRequestQueue {
   }
 
   private long providerDelay(int providerIndex) {
-    var settings = assistantManager.getProviderSettings(providerIndex);
-    if (settings == null) return 0L;
-    return providerThrottle.getDelay(settings.throttleKey(), settings.maxRequestsPerMinute());
+    return gateway.delayMs(ProviderSlot.fromIndex(providerIndex), null);
   }
 
   private boolean queueFallback(SceneRequest scene, String reason) {
@@ -480,34 +480,5 @@ final class SceneRequestQueue {
       processNextRequest();
     }, ticks);
     return true;
-  }
-
-  private static boolean isRateLimitError(Throwable error) {
-    String type = error.getClass().getSimpleName().toLowerCase(Locale.ROOT);
-    String message = String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT);
-    return type.contains("ratelimit") || message.contains("429")
-        || message.contains("resource_exhausted") || message.contains("rate limit");
-  }
-
-  private static boolean isTransientProviderError(Throwable error) {
-    String type = error.getClass().getSimpleName().toLowerCase(Locale.ROOT);
-    String message = String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT);
-    return type.contains("internalserver") || type.contains("serviceunavailable") || type.contains("timeout")
-        || message.contains("500") || message.contains("502") || message.contains("503") || message.contains("504")
-        || message.contains("temporarily unavailable") || message.contains("timed out") || message.contains("connection reset");
-  }
-
-  private static long parseProviderRetryDelay(Throwable error, long fallbackMs) {
-    String message = String.valueOf(error.getMessage());
-    java.util.regex.Matcher matcher = Pattern.compile(
-        "(?:retry|try again)(?:\\s+after|\\s+in)?\\s+([0-9]+(?:\\.[0-9]+)?)\\s*(?:s|sec|seconds?)",
-        Pattern.CASE_INSENSITIVE).matcher(message);
-    if (matcher.find()) {
-      try {
-        return Math.max(1000L, (long) Math.ceil(Double.parseDouble(matcher.group(1)) * 1000D) + 250L);
-      } catch (NumberFormatException ignored) {
-      }
-    }
-    return Math.max(1000L, fallbackMs);
   }
 }

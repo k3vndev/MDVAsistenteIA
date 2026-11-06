@@ -1,4 +1,4 @@
-package me.kev.sva.chat.assistant;
+package me.kev.sva.ai;
 
 import me.kev.sva.ServerAssistantPlugin;
 
@@ -132,6 +132,14 @@ public record ProviderSettings(
   /** Stable non-secret key used for independent throttling of primary/fallback. */
   public String throttleKey() {
     return type + "|" + baseUrl + "|" + model;
+  }
+
+  /** Throttle key for the effective model; null/blank override = {@link #throttleKey()}. */
+  public String throttleKey(String modelOverride) {
+    if (modelOverride == null || modelOverride.isBlank()) {
+      return throttleKey();
+    }
+    return type + "|" + baseUrl + "|" + modelOverride.trim();
   }
 
   private static String inferLegacyType(ServerAssistantPlugin plugin) {

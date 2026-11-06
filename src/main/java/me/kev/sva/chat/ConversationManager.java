@@ -21,6 +21,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 
 import me.kev.sva.ServerAssistantPlugin;
+import me.kev.sva.ai.ProviderThrottleRegistry;
 import me.kev.sva.chat.assistant.AssistantManager;
 import me.kev.sva.chat.assistant.AssistantRequestContext;
 import me.kev.sva.chat.message.AssistantChatMessage;
@@ -110,7 +111,7 @@ public final class ConversationManager {
             ? 0 : plugin.getToolManager().pendingApprovalSummaries().size());
   }
 
-  private String providerStatus(String role, me.kev.sva.chat.assistant.ProviderSettings settings) {
+  private String providerStatus(String role, me.kev.sva.ai.ProviderSettings settings) {
     if (settings == null) {
       return role + "=unconfigured";
     }

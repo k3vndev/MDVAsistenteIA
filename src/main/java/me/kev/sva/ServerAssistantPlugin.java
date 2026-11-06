@@ -6,8 +6,9 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import me.kev.sva.chat.ChatListener;
 import me.kev.sva.chat.ConversationManager;
-import me.kev.sva.chat.ProviderThrottleRegistry;
-import me.kev.sva.chat.assistant.ProviderSettings;
+import me.kev.sva.ai.AiGateway;
+import me.kev.sva.ai.ProviderThrottleRegistry;
+import me.kev.sva.ai.ProviderSettings;
 import me.kev.sva.chat.tools.ToolManager;
 import me.kev.sva.commands.CommandManager;
 import me.kev.sva.config.ConfigurationManager;
@@ -26,6 +27,8 @@ public final class ServerAssistantPlugin extends JavaPlugin {
     private ConfigurationManager configurationManager;
     private ActivityJournal activityJournal;
     private RelationshipManager relationshipManager;
+    /** Model access shared by Isolda and the external AI API; recreated on /sva reload. */
+    private AiGateway aiGateway;
 
     /** Survives /sva reload so provider cooldowns cannot be bypassed by reloading. */
     private final ProviderThrottleRegistry providerThrottleRegistry = new ProviderThrottleRegistry();
@@ -114,6 +117,11 @@ public final class ServerAssistantPlugin extends JavaPlugin {
         // Tools are created before ConversationManager because request-context
         // construction and the assistant prompt use the local/action tool registry.
         toolManager = new ToolManager(this);
+
+        // The gateway is created before ConversationManager, whose request queue
+        // builds Isolda's AssistantManager on top of it.
+        shutdownGateway();
+        aiGateway = new AiGateway(this, providerThrottleRegistry);
         conversationManager = new ConversationManager(this);
         chatListener = new ChatListener(this, conversationManager);
         getServer().getPluginManager().registerEvents(chatListener, this);
@@ -121,6 +129,20 @@ public final class ServerAssistantPlugin extends JavaPlugin {
 
     public ConversationManager getConversationManager() {
         return conversationManager;
+    }
+
+    public AiGateway getAiGateway() {
+        return aiGateway;
+    }
+
+    private void shutdownGateway() {
+        if (aiGateway != null) {
+            try {
+                aiGateway.shutdown();
+            } catch (Exception ignored) {
+            }
+            aiGateway = null;
+        }
     }
 
     public ProviderThrottleRegistry getProviderThrottleRegistry() {
@@ -186,6 +208,8 @@ public final class ServerAssistantPlugin extends JavaPlugin {
             }
             conversationManager = null;
         }
+
+        shutdownGateway();
 
         if (chatListener != null) {
             try {
