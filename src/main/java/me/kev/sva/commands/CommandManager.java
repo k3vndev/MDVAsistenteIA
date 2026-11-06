@@ -14,6 +14,16 @@ import org.bukkit.command.TabExecutor;
 import org.bukkit.util.StringUtil;
 
 import me.kev.sva.ServerAssistantPlugin;
+import me.kev.sva.ai.AiGateway;
+import me.kev.sva.ai.ProviderSettings;
+import me.kev.sva.ai.ProviderSlot;
+import me.kev.sva.ai.external.AiServiceImpl;
+import me.kev.sva.ai.external.ApiClientPolicy;
+import me.kev.sva.ai.external.ApiQuotaTracker;
+import me.kev.sva.ai.external.ApiSettings;
+import me.kev.sva.api.AiException;
+import me.kev.sva.api.AiPriority;
+import me.kev.sva.api.AiRequest;
 import me.kev.sva.utils.MessageSender;
 import net.kyori.adventure.text.Component;
 
@@ -62,6 +72,7 @@ public final class CommandManager implements TabExecutor {
       case "data" -> handleData(sender, args);
       case "approve" -> handleApprove(sender, args);
       case "deny" -> handleDeny(sender, args);
+      case "api" -> handleApi(sender, args);
       default -> sendHelp(sender);
     }
     return true;
@@ -92,6 +103,109 @@ public final class CommandManager implements TabExecutor {
       return;
     }
     sender.sendMessage(Component.text("ServerAssistant: " + plugin.getConversationManager().getRuntimeStatus()));
+    AiServiceImpl api = plugin.getAiService();
+    if (api != null && api.settings() != null) {
+      sender.sendMessage(Component.text("AI API: " + (api.isAvailable() ? "available" : "unavailable")
+          + ", queued=" + (api.interactiveQueued() + api.backgroundQueued())
+          + ", in_flight=" + api.inFlight()
+          + " (details: /sva api status)"));
+    }
+  }
+
+  private void handleApi(CommandSender sender, String[] args) {
+    String sub = args.length < 2 ? "" : args[1].toLowerCase(Locale.ROOT);
+    switch (sub) {
+      case "status" -> handleApiStatus(sender);
+      case "test" -> handleApiTest(sender, args);
+      default -> MessageSender.Error(sender, "Usage: /sva api status | /sva api test <profile> <text...>");
+    }
+  }
+
+  private void handleApiStatus(CommandSender sender) {
+    AiServiceImpl api = plugin.getAiService();
+    ApiSettings settings = api == null ? null : api.settings();
+    if (settings == null) {
+      sender.sendMessage(Component.text("AI API is not initialized."));
+      return;
+    }
+    AiGateway gateway = api.gateway();
+    sender.sendMessage(Component.text("AI API: " + (settings.enabled() ? "enabled" : "disabled")
+        + ", available=" + api.isAvailable()
+        + ", unknown-clients=" + (settings.allowUnknownClients() ? "allow" : "deny")));
+    sender.sendMessage(Component.text("Providers: " + providerLine(gateway, ProviderSlot.PRIMARY, "primary")
+        + ", " + providerLine(gateway, ProviderSlot.FALLBACK, "fallback")));
+    sender.sendMessage(Component.text("Queue: interactive=" + api.interactiveQueued()
+        + ", background=" + api.backgroundQueued()
+        + ", in_flight=" + api.inFlight() + "/" + settings.maxConcurrentRequests()
+        + ", external_rpm=" + api.quota().globalRequestsLastMinute() + "/"
+        + limitText(settings.maxRequestsPerMinute())
+        + ", reserve_for_isolda=" + settings.reserveForAssistantRpm()));
+    List<ApiClientPolicy> clients = settings.clients();
+    if (clients.isEmpty()) {
+      sender.sendMessage(Component.text("Clients: none configured"));
+    }
+    for (ApiClientPolicy client : clients) {
+      ApiQuotaTracker.Snapshot usage = api.quota().snapshot(client.name());
+      sender.sendMessage(Component.text("- " + client.name()
+          + (client.enabled() ? "" : " (disabled)")
+          + ": rpm " + usage.requestsLastMinute() + "/" + limitText(client.maxRequestsPerMinute())
+          + ", per-player rpm " + limitText(client.maxRequestsPerPlayerPerMinute())
+          + ", tokens today " + usage.tokensToday() + "/"
+          + (client.dailyTokenBudget() == 0 ? "unlimited" : client.dailyTokenBudget())
+          + ", profiles " + (client.profiles().isEmpty() ? "[default]" : client.profiles())));
+    }
+    sender.sendMessage(Component.text("Profiles: " + String.join(", ", settings.profileNames())));
+  }
+
+  private static String providerLine(AiGateway gateway, ProviderSlot slot, String role) {
+    ProviderSettings provider = gateway == null ? null : gateway.settings(slot);
+    if (provider == null) return role + "=disabled";
+    return role + "=" + provider.displayName() + "/" + provider.model()
+        + (gateway.isAvailable(slot) ? "" : "(not configured)");
+  }
+
+  private static String limitText(long limit) {
+    return limit == 0 ? "unlimited" : Long.toString(limit);
+  }
+
+  private void handleApiTest(CommandSender sender, String[] args) {
+    if (args.length < 4) {
+      MessageSender.Error(sender, "Usage: /sva api test <profile> <text...>");
+      return;
+    }
+    AiServiceImpl api = plugin.getAiService();
+    if (api == null) {
+      MessageSender.Error(sender, "AI API is not initialized.");
+      return;
+    }
+    String profile = args[2];
+    String text = String.join(" ", Arrays.copyOfRange(args, 3, args.length));
+    AiRequest request;
+    try {
+      request = AiRequest.builder(profile)
+          .user(text)
+          .priority(AiPriority.INTERACTIVE)
+          .tag("sva:test")
+          .build();
+    } catch (IllegalArgumentException ex) {
+      MessageSender.Error(sender, "Invalid request: " + ex.getMessage());
+      return;
+    }
+    sender.sendMessage(Component.text("Sending test request with profile '" + request.profile() + "'..."));
+    api.requestInternal(request).whenComplete((result, error) -> {
+      if (error != null) {
+        String reason = error instanceof AiException aiError ? aiError.reason().name() : error.getClass().getSimpleName();
+        MessageSender.Error(sender, "AI API test failed: " + reason + " (" + error.getMessage() + ")");
+        return;
+      }
+      String answer = result.text().replace('\n', ' ').replace('\r', ' ').trim();
+      if (answer.length() > 300) answer = answer.substring(0, 297) + "...";
+      sender.sendMessage(Component.text("AI: " + (answer.isEmpty() ? "(empty)" : answer)));
+      sender.sendMessage(Component.text("provider=" + result.provider() + " model=" + result.model()
+          + " in=" + result.inputTokens() + " cached=" + result.cachedTokens()
+          + " out=" + result.outputTokens() + " ms=" + result.latencyMs()
+          + (result.usedFallback() ? " (fallback)" : "")));
+    });
   }
 
   private void handleTrigger(CommandSender sender, String[] args) {
@@ -428,7 +542,7 @@ public final class CommandManager implements TabExecutor {
 
   private void sendHelp(CommandSender sender) {
     sender.sendMessage(Component.text(
-        "SVA: /sva reload | status | trigger | listener ... | history [status|general|player] | relationship <info|memories|set|romance|purge> | data purge <player> | tools ... | integrations ... | approve/deny"));
+        "SVA: /sva reload | status | trigger | listener ... | history [status|general|player] | relationship <info|memories|set|romance|purge> | data purge <player> | tools ... | integrations ... | approve/deny | api <status|test>"));
   }
 
   @Override
@@ -438,7 +552,14 @@ public final class CommandManager implements TabExecutor {
     }
     if (args.length == 1) {
       return complete(args[0], List.of(
-          "reload", "status", "trigger", "listener", "listen", "playerchatmode", "history", "relationship", "data", "tools", "integrations", "approve", "deny"));
+          "reload", "status", "trigger", "listener", "listen", "playerchatmode", "history", "relationship", "data", "tools", "integrations", "approve", "deny", "api"));
+    }
+    if (args.length == 2 && args[0].equalsIgnoreCase("api")) {
+      return complete(args[1], List.of("status", "test"));
+    }
+    if (args.length == 3 && args[0].equalsIgnoreCase("api") && args[1].equalsIgnoreCase("test")
+        && plugin.getAiService() != null && plugin.getAiService().settings() != null) {
+      return complete(args[2], plugin.getAiService().settings().profileNames());
     }
     if (args.length == 2 && args[0].equalsIgnoreCase("playerchatmode")) {
       return complete(args[1], MODES);
