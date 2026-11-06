@@ -4,7 +4,7 @@
 
 # Technical/runtime settings only. Character prompt -> personality.yml; knowledge -> wiki.yml.
 # Missing keys from newer plugin versions are merged automatically without replacing your values.
-config-version: 18
+config-version: 19
 
 assistant-name: Isolda
 
@@ -56,6 +56,71 @@ ai:
     max-requests-per-minute: 4
     request-timeout-ms: 20000
     max-wait-ms: 2500
+
+# ============================================================
+# AI API FOR OTHER PLUGINS
+# ============================================================
+# Other plugins (MDVTrivia, MDVTutorial...) can send their own one-off
+# requests through Bukkit's ServicesManager (me.kev.sva.api.AiService).
+# They reuse the providers above but never Isolda's prompt or memory.
+api:
+  enabled: true
+  # Requests running at the same time for ALL external plugins.
+  max-concurrent-requests: 2
+  # External requests per minute, all plugins together (0 = no extra cap).
+  max-requests-per-minute: 6
+  # BACKGROUND requests wait while the provider bucket has fewer than this many
+  # free slots per minute, so Isolda always keeps room. INTERACTIVE ignores it.
+  # Capped at half of each provider's max-requests-per-minute.
+  reserve-for-assistant-rpm: 4
+  # Max time a request may wait in the queue before failing with QUEUE_TIMEOUT.
+  max-queue-wait-ms: 15000
+  max-queue-size: 20
+  # deny = only plugins listed under clients may call the API.
+  unknown-clients: deny
+  # One console line per request (client, profile, tag, provider, tokens, result).
+  # Prompt content is never logged.
+  log-requests: true
+  # Short system message added before every external request ('' = none).
+  base-system-prompt: "You are a backend helper for a Minecraft server plugin. Follow the plugin's instructions below. Never claim to be Isolda unless asked."
+  limits:
+    max-messages: 20
+    max-input-chars: 12000
+
+  # Missing fields are inherited from `default`; what `default` leaves out comes
+  # from the provider (ai.* or ai.fallback.*).
+  profiles:
+    default:
+      provider: primary        # primary | fallback
+      model: ''                # '' = model of that provider
+      max-output-tokens: 300
+      temperature: 0.7
+      request-timeout-ms: 20000
+      allow-fallback: true
+    trivia-generate:
+      max-output-tokens: 1200
+      temperature: 0.9
+      request-timeout-ms: 30000
+    tutorial-hint:
+      max-output-tokens: 150
+      temperature: 0.6
+      request-timeout-ms: 12000
+
+  # Key = the calling plugin's name. profiles: [] = only default. 0 = no limit.
+  # Daily token budgets are kept in memory and restart with the server.
+  clients:
+    MDVTrivia:
+      enabled: true
+      profiles: [trivia-generate, default]
+      max-requests-per-minute: 3
+      max-requests-per-player-per-minute: 0
+      daily-token-budget: 200000
+    MDVTutorial:
+      enabled: true
+      profiles: [tutorial-hint, default]
+      max-requests-per-minute: 6
+      max-requests-per-player-per-minute: 2
+      daily-token-budget: 100000
 
 # ============================================================
 # ONE GLOBAL PUBLIC CONVERSATION

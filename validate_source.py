@@ -156,6 +156,19 @@ def check_obvious_secret(errors: list[str], paths: list[Path]) -> None:
             fail(errors, f"possible OpenAI secret committed in {path.relative_to(ROOT)}")
 
 
+def check_public_api_isolation(errors: list[str]) -> None:
+    # me.kev.sva.api is the public contract other plugins compile against (the -api jar).
+    # It must not leak OpenAI SDK types or depend on ServerAssistant internals.
+    api_dir = MAIN_JAVA / "me" / "kev" / "sva" / "api"
+    forbidden = re.compile(r"(?m)^\s*import\s+(?:static\s+)?(com\.openai|me\.kev\.sva\.ai|me\.kev\.sva\.chat)\b")
+    for path in sorted(api_dir.rglob("*.java")):
+        text = path.read_text(encoding="utf-8")
+        for match in forbidden.finditer(text):
+            fail(errors, f"public API file {path.relative_to(ROOT)} imports {match.group(1)}")
+        if "com.openai." in text:
+            fail(errors, f"public API file {path.relative_to(ROOT)} references com.openai")
+
+
 def main() -> int:
     errors: list[str] = []
     main_java = sorted(MAIN_JAVA.rglob("*.java"))
@@ -175,6 +188,7 @@ def main() -> int:
     check_exact_duplicate_method_signatures(errors, main_java + tests)
     total_tests = check_duplicate_test_methods(errors, tests)
     check_obvious_secret(errors, tracked_text)
+    check_public_api_isolation(errors)
 
     print(f"Source files: {len(main_java)} main / {len(tests)} test")
     print(f"JUnit @Test methods detected: {total_tests}")

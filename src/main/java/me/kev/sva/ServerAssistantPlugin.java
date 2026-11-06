@@ -2,12 +2,17 @@ package me.kev.sva;
 
 import org.bukkit.Bukkit;
 import org.bukkit.event.HandlerList;
+import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import me.kev.sva.chat.ChatListener;
 import me.kev.sva.chat.ConversationManager;
 import me.kev.sva.ai.AiGateway;
 import me.kev.sva.ai.ProviderThrottleRegistry;
+import me.kev.sva.ai.external.AiServiceImpl;
+import me.kev.sva.ai.external.ApiSettings;
+import me.kev.sva.api.AiException;
+import me.kev.sva.api.AiService;
 import me.kev.sva.ai.ProviderSettings;
 import me.kev.sva.chat.tools.ToolManager;
 import me.kev.sva.commands.CommandManager;
@@ -29,6 +34,8 @@ public final class ServerAssistantPlugin extends JavaPlugin {
     private RelationshipManager relationshipManager;
     /** Model access shared by Isolda and the external AI API; recreated on /sva reload. */
     private AiGateway aiGateway;
+    /** Public AI API for other plugins. Created once per enable so their references survive reloads. */
+    private AiServiceImpl aiService;
 
     /** Survives /sva reload so provider cooldowns cannot be bypassed by reloading. */
     private final ProviderThrottleRegistry providerThrottleRegistry = new ProviderThrottleRegistry();
@@ -48,7 +55,9 @@ public final class ServerAssistantPlugin extends JavaPlugin {
 
         activityJournal = new ActivityJournal(this);
         relationshipManager = new RelationshipManager(this);
+        aiService = new AiServiceImpl(this);
         initializePlugin();
+        getServer().getServicesManager().register(AiService.class, aiService, this, ServicePriority.Normal);
 
         Bukkit.getConsoleSender().sendMessage(Constants.ASCII_LOGO);
         MessageSender.Success("Plugin enabled successfully.");
@@ -120,8 +129,10 @@ public final class ServerAssistantPlugin extends JavaPlugin {
 
         // The gateway is created before ConversationManager, whose request queue
         // builds Isolda's AssistantManager on top of it.
+        if (aiService != null) aiService.cancelAll(AiException.Reason.RELOADING);
         shutdownGateway();
         aiGateway = new AiGateway(this, providerThrottleRegistry);
+        if (aiService != null) aiService.swapGateway(aiGateway, ApiSettings.load(getConfig()));
         conversationManager = new ConversationManager(this);
         chatListener = new ChatListener(this, conversationManager);
         getServer().getPluginManager().registerEvents(chatListener, this);
@@ -129,6 +140,10 @@ public final class ServerAssistantPlugin extends JavaPlugin {
 
     public ConversationManager getConversationManager() {
         return conversationManager;
+    }
+
+    public AiServiceImpl getAiService() {
+        return aiService;
     }
 
     public AiGateway getAiGateway() {
@@ -201,6 +216,14 @@ public final class ServerAssistantPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (aiService != null) {
+            try {
+                aiService.cancelAll(AiException.Reason.SHUTDOWN);
+            } catch (Exception ignored) {
+            }
+        }
+        getServer().getServicesManager().unregisterAll(this);
+
         if (conversationManager != null) {
             try {
                 conversationManager.shutdown();
